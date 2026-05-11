@@ -22,4 +22,8 @@ data class StreamUiState(
     val capturedPhoto: Bitmap? = null,
     val isShareDialogVisible: Boolean = false,
     val isCapturing: Boolean = false,
+    val isAutoCaptureEnabled: Boolean = true,
+    val autoCaptureIntervalSeconds: Int = 5,
+    val autoSavedPhotoCount: Int = 0,
+    val lastAutoCaptureError: String? = null,
 )

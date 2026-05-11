@@ -16,12 +16,20 @@
 
     <!-- Stream Screen -->
     <string name="live_stream" description="Live Stream">Live stream</string>
+    <string name="auto_capture_title" description="Auto capture title">Auto capture</string>
+    <string name="auto_capture_interval_seconds" description="Auto capture interval seconds label">Seconds</string>
+    <string name="auto_capture_saved_count" description="Auto capture saved count">Saved: <xliff:g id="count">%1$d</xliff:g></string>
+    <string name="auto_capture_error" description="Auto capture error">Auto capture error: <xliff:g id="error">%1$s</xliff:g></string>
 
     <!-- Non Stream Screen -->
     <string name="camera_access_icon_description" description="Camera Access icon description">Camera Access icon</string>
     <string name="non_stream_screen_description" description="Non stream screen description">Tap the Start streaming button to stream video from your glasses or use the camera button to take a photo from your glasses.</string>
     <string name="non_stream_screen_title" description="Non stream screen title">Stream Your Glasses Camera</string>
     <string name="waiting_for_active_device" description="Waiting for active device message">Waiting for an active device</string>
+    <string name="stream_configuration_title" description="Stream configuration title">Stream configuration</string>
+    <string name="stream_quality_label" description="Stream quality label">Quality</string>
+    <string name="stream_frame_rate_label" description="Stream frame rate label">Frame rate</string>
+    <string name="stream_frame_rate_value" description="Stream frame rate value"><xliff:g id="fps">%1$d</xliff:g> fps</string>
 
     <!-- SharePhotoDialog -->
     <string name="photo_captured" description="Photo Captured">Photo Captured</string>

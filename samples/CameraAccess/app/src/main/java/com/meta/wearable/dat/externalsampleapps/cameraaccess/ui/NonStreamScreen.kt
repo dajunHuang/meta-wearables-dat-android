@@ -30,7 +30,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -58,6 +60,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.meta.wearable.dat.camera.types.VideoQuality
 import com.meta.wearable.dat.core.types.Permission
 import com.meta.wearable.dat.core.types.PermissionStatus
 import com.meta.wearable.dat.core.types.RegistrationState
@@ -145,6 +148,14 @@ fun NonStreamScreen(
           modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding(),
           horizontalAlignment = Alignment.CenterHorizontally,
       ) {
+        StreamConfigurationControls(
+            selectedVideoQuality = uiState.streamVideoQuality,
+            selectedFrameRate = uiState.streamFrameRate,
+            onVideoQualitySelected = viewModel::setStreamVideoQuality,
+            onFrameRateSelected = viewModel::setStreamFrameRate,
+            modifier = Modifier.padding(bottom = 16.dp),
+        )
+
         if (!uiState.hasActiveDevice) {
           Row(
               horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -188,6 +199,90 @@ fun NonStreamScreen(
               }
           )
         }
+      }
+    }
+  }
+}
+
+@Composable
+private fun StreamConfigurationControls(
+    selectedVideoQuality: VideoQuality,
+    selectedFrameRate: Int,
+    onVideoQualitySelected: (VideoQuality) -> Unit,
+    onFrameRateSelected: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+  Column(
+      modifier = modifier.fillMaxWidth(),
+      verticalArrangement = Arrangement.spacedBy(8.dp),
+  ) {
+    Text(
+        text = stringResource(R.string.stream_configuration_title),
+        style = MaterialTheme.typography.labelLarge,
+        color = Color.White.copy(alpha = 0.85f),
+        modifier = Modifier.fillMaxWidth(),
+        textAlign = TextAlign.Center,
+    )
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      StreamConfigDropdown(
+          label = stringResource(R.string.stream_quality_label),
+          value = selectedVideoQuality.name,
+          options = listOf(VideoQuality.HIGH, VideoQuality.MEDIUM, VideoQuality.LOW),
+          optionLabel = { it.name },
+          onSelected = onVideoQualitySelected,
+          modifier = Modifier.weight(1f),
+      )
+      StreamConfigDropdown(
+          label = stringResource(R.string.stream_frame_rate_label),
+          value = stringResource(R.string.stream_frame_rate_value, selectedFrameRate),
+          options = listOf(2, 7, 15, 24, 30),
+          optionLabel = { stringResource(R.string.stream_frame_rate_value, it) },
+          onSelected = onFrameRateSelected,
+          modifier = Modifier.weight(1f),
+      )
+    }
+  }
+}
+
+@Composable
+private fun <T> StreamConfigDropdown(
+    label: String,
+    value: String,
+    options: List<T>,
+    optionLabel: @Composable (T) -> String,
+    onSelected: (T) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+  var expanded by remember { mutableStateOf(false) }
+  Box(modifier = modifier) {
+    Button(
+        onClick = { expanded = true },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+      Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
+        Text(text = label, style = MaterialTheme.typography.labelSmall)
+        Text(text = value, style = MaterialTheme.typography.bodyMedium)
+      }
+      Icon(
+          imageVector = Icons.Default.ArrowDropDown,
+          contentDescription = null,
+      )
+    }
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = { expanded = false },
+    ) {
+      options.forEach { option ->
+        DropdownMenuItem(
+            text = { Text(optionLabel(option)) },
+            onClick = {
+              onSelected(option)
+              expanded = false
+            },
+        )
       }
     }
   }

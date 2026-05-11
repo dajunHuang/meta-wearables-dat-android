@@ -19,10 +19,13 @@ package com.meta.wearable.dat.externalsampleapps.cameraaccess.stream
 
 import android.annotation.SuppressLint
 import android.app.Application
+import android.content.ContentValues
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import android.os.Environment
+import android.provider.MediaStore
 import android.util.Log
 import androidx.core.content.FileProvider
 import androidx.exifinterface.media.ExifInterface
@@ -47,11 +50,16 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 @SuppressLint("AutoCloseableUse")
@@ -64,6 +72,8 @@ class StreamViewModel(
     private const val TAG = "CameraAccess:StreamViewModel"
     private val INITIAL_STATE = StreamUiState()
     private val SESSION_TERMINAL_STATES = setOf(StreamSessionState.CLOSED)
+    private const val MIN_AUTO_CAPTURE_INTERVAL_SECONDS = 1
+    private const val MAX_AUTO_CAPTURE_INTERVAL_SECONDS = 3600
   }
 
   private val deviceSelector: DeviceSelector = wearablesViewModel.deviceSelector
@@ -76,6 +86,7 @@ class StreamViewModel(
   private var stateJob: Job? = null
   private var errorJob: Job? = null
   private var sessionStateJob: Job? = null
+  private var autoCaptureJob: Job? = null
   private var stream: Stream? = null
 
   // Presentation queue for buffering frames after color conversion
@@ -129,7 +140,12 @@ class StreamViewModel(
               stream?.stop()
               stream = null
               session
-                  ?.addStream(StreamConfiguration(videoQuality = VideoQuality.MEDIUM, 24))
+                  ?.addStream(
+                      StreamConfiguration(
+                          videoQuality = wearablesViewModel.uiState.value.streamVideoQuality,
+                          frameRate = wearablesViewModel.uiState.value.streamFrameRate,
+                      )
+                  )
                   ?.onSuccess { addedStream ->
                     stream = addedStream
                     videoJob =
@@ -144,6 +160,7 @@ class StreamViewModel(
                             val prevState = _uiState.value.streamSessionState
                             Log.d(TAG, "Stream state changed: $prevState -> $currentState")
                             _uiState.update { it.copy(streamSessionState = currentState) }
+                            updateAutoCaptureJob()
 
                             val wasActive = prevState !in SESSION_TERMINAL_STATES
                             val isTerminated = currentState in SESSION_TERMINAL_STATES
@@ -190,6 +207,8 @@ class StreamViewModel(
     errorJob = null
     sessionStateJob?.cancel()
     sessionStateJob = null
+    autoCaptureJob?.cancel()
+    autoCaptureJob = null
     presentationQueue?.stop()
     presentationQueue = null
     _uiState.update { INITIAL_STATE }
@@ -200,34 +219,40 @@ class StreamViewModel(
   }
 
   fun capturePhoto() {
-    if (uiState.value.isCapturing) {
+    if (_uiState.value.isCapturing) {
       Log.d(TAG, "Photo capture already in progress, ignoring request")
       return
     }
 
-    if (uiState.value.streamSessionState == StreamSessionState.STREAMING) {
+    if (_uiState.value.streamSessionState == StreamSessionState.STREAMING) {
       Log.d(TAG, "Starting photo capture")
-      _uiState.update { it.copy(isCapturing = true) }
-
       viewModelScope.launch {
-        stream
-            ?.capturePhoto()
-            ?.onSuccess { photoData ->
-              Log.d(TAG, "Photo capture successful")
-              handlePhotoData(photoData)
-              _uiState.update { it.copy(isCapturing = false) }
-            }
-            ?.onFailure { error, _ ->
-              Log.e(TAG, "Photo capture failed: ${error.description}")
-              _uiState.update { it.copy(isCapturing = false) }
-            }
+        capturePhotoInternal(
+            showShareDialog = true,
+            saveToGallery = false,
+        )
       }
     } else {
       Log.w(
           TAG,
-          "Cannot capture photo: stream not active (state=${uiState.value.streamSessionState})",
+          "Cannot capture photo: stream not active (state=${_uiState.value.streamSessionState})",
       )
     }
+  }
+
+  fun setAutoCaptureEnabled(enabled: Boolean) {
+    _uiState.update { it.copy(isAutoCaptureEnabled = enabled, lastAutoCaptureError = null) }
+    updateAutoCaptureJob()
+  }
+
+  fun setAutoCaptureIntervalSeconds(seconds: Int) {
+    val sanitized =
+        seconds.coerceIn(
+            MIN_AUTO_CAPTURE_INTERVAL_SECONDS,
+            MAX_AUTO_CAPTURE_INTERVAL_SECONDS,
+        )
+    _uiState.update { it.copy(autoCaptureIntervalSeconds = sanitized) }
+    updateAutoCaptureJob()
   }
 
   fun showShareDialog() {
@@ -282,21 +307,134 @@ class StreamViewModel(
     }
   }
 
-  private fun handlePhotoData(photo: PhotoData) {
-    val capturedPhoto =
-        when (photo) {
-          is PhotoData.Bitmap -> photo.bitmap
-          is PhotoData.HEIC -> {
-            val byteArray = ByteArray(photo.data.remaining())
-            photo.data.get(byteArray)
+  private suspend fun capturePhotoInternal(showShareDialog: Boolean, saveToGallery: Boolean) {
+    if (_uiState.value.isCapturing) {
+      Log.d(TAG, "Photo capture already in progress, skipping request")
+      return
+    }
 
-            // Extract EXIF transformation matrix and apply to bitmap
-            val exifInfo = getExifInfo(byteArray)
-            val transform = getTransform(exifInfo)
-            decodeHeic(byteArray, transform)
+    val activeStream = stream
+    if (activeStream == null || _uiState.value.streamSessionState != StreamSessionState.STREAMING) {
+      Log.w(TAG, "Cannot capture photo: stream not active")
+      return
+    }
+
+    _uiState.update { it.copy(isCapturing = true) }
+    try {
+      activeStream
+          .capturePhoto()
+          .onSuccess { photoData ->
+            Log.d(TAG, "Photo capture successful")
+            val capturedPhoto = photoDataToBitmap(photoData)
+            if (showShareDialog) {
+              _uiState.update {
+                it.copy(capturedPhoto = capturedPhoto, isShareDialogVisible = true)
+              }
+            }
+            if (saveToGallery) {
+              saveBitmapToGallery(capturedPhoto)
+            }
+          }
+          .onFailure { error, _ ->
+            Log.e(TAG, "Photo capture failed: ${error.description}")
+            if (saveToGallery) {
+              _uiState.update { it.copy(lastAutoCaptureError = error.description) }
+            }
+          }
+    } finally {
+      _uiState.update { it.copy(isCapturing = false) }
+    }
+  }
+
+  private fun updateAutoCaptureJob() {
+    autoCaptureJob?.cancel()
+    autoCaptureJob = null
+
+    val state = _uiState.value
+    if (!state.isAutoCaptureEnabled || state.streamSessionState != StreamSessionState.STREAMING) {
+      return
+    }
+
+    autoCaptureJob =
+        viewModelScope.launch {
+          while (isActive) {
+            val intervalMillis = _uiState.value.autoCaptureIntervalSeconds * 1000L
+            delay(intervalMillis)
+            val currentState = _uiState.value
+            if (
+                currentState.isAutoCaptureEnabled &&
+                    currentState.streamSessionState == StreamSessionState.STREAMING &&
+                    !currentState.isCapturing
+            ) {
+              capturePhotoInternal(
+                  showShareDialog = false,
+                  saveToGallery = true,
+              )
+            }
           }
         }
-    _uiState.update { it.copy(capturedPhoto = capturedPhoto, isShareDialogVisible = true) }
+  }
+
+  private fun photoDataToBitmap(photo: PhotoData): Bitmap {
+    return when (photo) {
+      is PhotoData.Bitmap -> photo.bitmap
+      is PhotoData.HEIC -> {
+        val byteArray = ByteArray(photo.data.remaining())
+        photo.data.get(byteArray)
+
+        // Extract EXIF transformation matrix and apply to bitmap
+        val exifInfo = getExifInfo(byteArray)
+        val transform = getTransform(exifInfo)
+        decodeHeic(byteArray, transform)
+      }
+    }
+  }
+
+  private fun saveBitmapToGallery(bitmap: Bitmap) {
+    val context = getApplication<Application>()
+    val resolver = context.contentResolver
+    val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
+    val displayName = "CameraAccess_$timestamp.jpg"
+    val contentValues =
+        ContentValues().apply {
+          put(MediaStore.Images.Media.DISPLAY_NAME, displayName)
+          put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+          put(
+              MediaStore.Images.Media.RELATIVE_PATH,
+              "${Environment.DIRECTORY_PICTURES}/CameraAccess",
+          )
+          put(MediaStore.Images.Media.IS_PENDING, 1)
+        }
+
+    val imageUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+    if (imageUri == null) {
+      Log.e(TAG, "Failed to create MediaStore image entry")
+      _uiState.update { it.copy(lastAutoCaptureError = "Failed to create image file") }
+      return
+    }
+
+    try {
+      resolver.openOutputStream(imageUri)?.use { outputStream ->
+        if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 95, outputStream)) {
+          throw IOException("Bitmap compression failed")
+        }
+      } ?: throw IOException("Failed to open MediaStore output stream")
+
+      contentValues.clear()
+      contentValues.put(MediaStore.Images.Media.IS_PENDING, 0)
+      resolver.update(imageUri, contentValues, null, null)
+      _uiState.update {
+        it.copy(
+            autoSavedPhotoCount = it.autoSavedPhotoCount + 1,
+            lastAutoCaptureError = null,
+        )
+      }
+      Log.d(TAG, "Saved auto-captured photo to $imageUri")
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed to save auto-captured photo", e)
+      runCatching { resolver.delete(imageUri, null, null) }
+      _uiState.update { it.copy(lastAutoCaptureError = "Failed to save photo") }
+    }
   }
 
   // HEIC Decoding with EXIF transformation
